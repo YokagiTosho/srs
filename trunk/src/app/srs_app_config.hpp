@@ -294,6 +294,8 @@ public:
     virtual bool get_srt_enabled() = 0;
     virtual bool get_srt_enabled(std::string vhost) = 0;
     virtual bool get_rtc_to_rtmp(std::string vhost) = 0;
+    virtual srs_utime_t get_rtc_stun_timeout(std::string vhost) = 0;
+    virtual bool get_rtc_stun_strict_check(std::string vhost) = 0;
 };
 
 // The config service provider.

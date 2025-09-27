@@ -2230,6 +2230,16 @@ bool MockAppConfig::get_rtc_to_rtmp(std::string vhost)
     return rtc_to_rtmp_;
 }
 
+srs_utime_t MockAppConfig::get_rtc_stun_timeout(std::string vhost)
+{
+    return 30 * SRS_UTIME_SECONDS; // Default 30 seconds timeout
+}
+
+bool MockAppConfig::get_rtc_stun_strict_check(std::string vhost)
+{
+    return false; // Default to non-strict mode
+}
+
 void MockAppConfig::set_http_hooks_enabled(bool enabled)
 {
     http_hooks_enabled_ = enabled;
@@ -3793,17 +3803,20 @@ VOID TEST(SrsRtcPublishTwccTimerTest, OnTimer)
 
     // Test 4: Circuit breaker in critical state - should return early without calling send_periodic_twcc
     if (true) {
-        mock_sender->reset();
-        mock_sender->set_sender_started(true);
-        mock_sender->set_sender_twcc_enabled(true);
-
-        // Mock circuit breaker to be in critical state
+        // Mock circuit breaker to be in critical state - must be set BEFORE creating timer
         MockCircuitBreaker mock_circuit_breaker;
         mock_circuit_breaker.hybrid_critical_water_level_ = true;
         ISrsCircuitBreaker *original_circuit_breaker = _srs_circuit_breaker;
         _srs_circuit_breaker = &mock_circuit_breaker;
 
-        HELPER_EXPECT_SUCCESS(timer->on_timer(100 * SRS_UTIME_MILLISECONDS));
+        // Create new timer with the mock circuit breaker
+        SrsUniquePtr<SrsRtcPublishTwccTimer> timer_with_mock_cb(new SrsRtcPublishTwccTimer(mock_sender));
+
+        mock_sender->reset();
+        mock_sender->set_sender_started(true);
+        mock_sender->set_sender_twcc_enabled(true);
+
+        HELPER_EXPECT_SUCCESS(timer_with_mock_cb->on_timer(100 * SRS_UTIME_MILLISECONDS));
 
         // Verify send_periodic_twcc was not called due to circuit breaker
         EXPECT_EQ(0, mock_sender->send_periodic_twcc_count_);

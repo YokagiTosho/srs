@@ -365,6 +365,8 @@ srs_error_t SrsRtcSessionManager::create_rtc_session(SrsRtcUserConfig *ruc, SrsS
     // TODO: FIXME: add do_create_session to error process.
     SrsContextId cid = _srs_context->get_id();
     SrsRtcConnection *session = new SrsRtcConnection(this, cid);
+    session->assemble();
+
     if ((err = do_create_rtc_session(ruc, local_sdp, session)) != srs_success) {
         srs_freep(session);
         return srs_error_wrap(err, "create session");

@@ -256,6 +256,8 @@ public:
     virtual bool get_srt_enabled();
     virtual bool get_srt_enabled(std::string vhost);
     virtual bool get_rtc_to_rtmp(std::string vhost);
+    virtual srs_utime_t get_rtc_stun_timeout(std::string vhost);
+    virtual bool get_rtc_stun_strict_check(std::string vhost);
     void set_http_hooks_enabled(bool enabled);
     void set_on_stop_urls(const std::vector<std::string> &urls);
     void clear_on_stop_directive();

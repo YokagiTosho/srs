@@ -1001,6 +1001,8 @@ SrsRtcPublishTwccTimer::SrsRtcPublishTwccTimer(ISrsRtcRtcpSender *sender) : send
 {
     lock_ = srs_mutex_new();
     _srs_shared_timer->timer100ms()->subscribe(this);
+
+    circuit_breaker_ = _srs_circuit_breaker;
 }
 
 SrsRtcPublishTwccTimer::~SrsRtcPublishTwccTimer()
@@ -1010,6 +1012,8 @@ SrsRtcPublishTwccTimer::~SrsRtcPublishTwccTimer()
         _srs_shared_timer->timer100ms()->unsubscribe(this);
     }
     srs_mutex_destroy(lock_);
+
+    circuit_breaker_ = NULL;
 }
 
 srs_error_t SrsRtcPublishTwccTimer::on_timer(srs_utime_t interval)
@@ -1036,7 +1040,7 @@ srs_error_t SrsRtcPublishTwccTimer::on_timer(srs_utime_t interval)
     ++_srs_pps_twcc->sugar_;
 
     // If circuit-breaker is dropping packet, disable TWCC.
-    if (_srs_circuit_breaker->hybrid_critical_water_level()) {
+    if (circuit_breaker_->hybrid_critical_water_level()) {
         ++_srs_pps_snack4->sugar_;
         return err;
     }
@@ -1814,7 +1818,15 @@ void SrsRtcPublishStream::update_send_report_time(uint32_t ssrc, const SrsNtp &n
     }
 }
 
-SrsRtcConnectionNackTimer::SrsRtcConnectionNackTimer(SrsRtcConnection *p) : p_(p)
+ISrsRtcConnectionNackTimerHandler::ISrsRtcConnectionNackTimerHandler()
+{
+}
+
+ISrsRtcConnectionNackTimerHandler::~ISrsRtcConnectionNackTimerHandler()
+{
+}
+
+SrsRtcConnectionNackTimer::SrsRtcConnectionNackTimer(ISrsRtcConnectionNackTimerHandler *handler) : handler_(handler)
 {
     lock_ = srs_mutex_new();
 
@@ -1850,29 +1862,7 @@ srs_error_t SrsRtcConnectionNackTimer::on_timer(srs_utime_t interval)
     // to prevent it from being freed.
     SrsLocker(&lock_);
 
-    if (!p_->nack_enabled_) {
-        return err;
-    }
-
-    ++_srs_pps_conn->sugar_;
-
-    // If circuit-breaker is enabled, disable nack.
-    if (circuit_breaker_->hybrid_critical_water_level()) {
-        ++_srs_pps_snack4->sugar_;
-        return err;
-    }
-
-    std::map<std::string, SrsRtcPublishStream *>::iterator it;
-    for (it = p_->publishers_.begin(); it != p_->publishers_.end(); it++) {
-        SrsRtcPublishStream *publisher = it->second;
-
-        if ((err = publisher->check_send_nacks()) != srs_success) {
-            srs_warn("ignore nack err %s", srs_error_desc(err).c_str());
-            srs_freep(err);
-        }
-    }
-
-    return err;
+    return handler_->do_check_send_nacks();
 }
 
 ISrsExecRtcAsyncTask::ISrsExecRtcAsyncTask()
@@ -1907,12 +1897,20 @@ SrsRtcConnection::SrsRtcConnection(ISrsExecRtcAsyncTask *exec, const SrsContextI
     nack_enabled_ = false;
     timer_nack_ = new SrsRtcConnectionNackTimer(this);
 
-    _srs_conn_manager->subscribe(this);
+    circuit_breaker_ = _srs_circuit_breaker;
+    conn_manager_ = _srs_conn_manager;
+    rtc_sources_ = _srs_rtc_sources;
+    config_ = _srs_config;
+}
+
+void SrsRtcConnection::assemble()
+{
+    conn_manager_->subscribe(this);
 }
 
 SrsRtcConnection::~SrsRtcConnection()
 {
-    _srs_conn_manager->unsubscribe(this);
+    conn_manager_->unsubscribe(this);
 
     srs_freep(timer_nack_);
 
@@ -1947,6 +1945,10 @@ SrsRtcConnection::~SrsRtcConnection()
 
     // Optional to release the publisher token.
     publish_token_ = NULL;
+    circuit_breaker_ = NULL;
+    conn_manager_ = NULL;
+    rtc_sources_ = NULL;
+    config_ = NULL;
 }
 
 void SrsRtcConnection::on_before_dispose(ISrsResource *c)
@@ -2032,7 +2034,7 @@ std::string SrsRtcConnection::desc()
 void SrsRtcConnection::expire()
 {
     // TODO: FIXME: Should set session to expired and remove it by heartbeat checking. Should not remove it directly.
-    _srs_conn_manager->remove(this);
+    conn_manager_->remove(this);
 }
 
 void SrsRtcConnection::switch_to_context()
@@ -2063,7 +2065,7 @@ srs_error_t SrsRtcConnection::add_publisher(SrsRtcUserConfig *ruc, SrsSdp &local
     }
 
     SrsSharedPtr<SrsRtcSource> source;
-    if ((err = _srs_rtc_sources->fetch_or_create(req, source)) != srs_success) {
+    if ((err = rtc_sources_->fetch_or_create(req, source)) != srs_success) {
         return srs_error_wrap(err, "create source");
     }
 
@@ -2142,10 +2144,10 @@ srs_error_t SrsRtcConnection::initialize(ISrsRequest *r, bool dtls, bool srtp, s
     }
 
     // TODO: FIXME: Support reload.
-    session_timeout_ = _srs_config->get_rtc_stun_timeout(req_->vhost_);
+    session_timeout_ = config_->get_rtc_stun_timeout(req_->vhost_);
     last_stun_time_ = srs_time_now_cached();
 
-    nack_enabled_ = _srs_config->get_rtc_nack_enabled(req_->vhost_);
+    nack_enabled_ = config_->get_rtc_nack_enabled(req_->vhost_);
 
     if ((err = timer_nack_->initialize()) != srs_success) {
         return srs_error_wrap(err, "initialize timer nack");
@@ -2379,7 +2381,7 @@ srs_error_t SrsRtcConnection::on_dtls_alert(std::string type, std::string desc)
         switch_to_context();
 
         srs_trace("RTC: session destroy by DTLS alert(%s %s), username=%s", type.c_str(), desc.c_str(), username_.c_str());
-        _srs_conn_manager->remove(this);
+        conn_manager_->remove(this);
     }
 
     return err;
@@ -2425,12 +2427,14 @@ srs_error_t SrsRtcConnection::send_rtcp(char *data, int nb_data)
 
 void SrsRtcConnection::check_send_nacks(SrsRtpNackForReceiver *nack, uint32_t ssrc, uint32_t &sent_nacks, uint32_t &timeout_nacks)
 {
+    srs_error_t err = srs_success;
+
     ++_srs_pps_snack->sugar_;
 
     SrsRtcpNack rtcpNack(ssrc);
 
     // If circuit-breaker is enabled, disable nack.
-    if (_srs_circuit_breaker->hybrid_high_water_level()) {
+    if (circuit_breaker_->hybrid_high_water_level()) {
         ++_srs_pps_snack4->sugar_;
     } else {
         rtcpNack.set_media_ssrc(ssrc);
@@ -2448,10 +2452,14 @@ void SrsRtcConnection::check_send_nacks(SrsRtpNackForReceiver *nack, uint32_t ss
     SrsBuffer stream(buf, sizeof(buf));
 
     // TODO: FIXME: Check error.
-    rtcpNack.encode(&stream);
+    if ((err = rtcpNack.encode(&stream)) != srs_success) {
+        srs_freep(err);
+        return;
+    }
 
     // TODO: FIXME: Check error.
-    send_rtcp(stream.data(), stream.pos());
+    err = send_rtcp(stream.data(), stream.pos());
+    srs_freep(err);
 }
 
 srs_error_t SrsRtcConnection::send_rtcp_rr(uint32_t ssrc, SrsRtpRingBuffer *rtp_queue, const uint64_t &last_send_systime, const SrsNtp &last_send_ntp)
@@ -2566,6 +2574,35 @@ srs_error_t SrsRtcConnection::send_rtcp_fb_pli(uint32_t ssrc, const SrsContextId
     return send_rtcp(stream.data(), stream.pos());
 }
 
+srs_error_t SrsRtcConnection::do_check_send_nacks()
+{
+    srs_error_t err = srs_success;
+
+    if (!nack_enabled_) {
+        return err;
+    }
+
+    ++_srs_pps_conn->sugar_;
+
+    // If circuit-breaker is enabled, disable nack.
+    if (circuit_breaker_->hybrid_critical_water_level()) {
+        ++_srs_pps_snack4->sugar_;
+        return err;
+    }
+
+    std::map<std::string, SrsRtcPublishStream *>::iterator it;
+    for (it = publishers_.begin(); it != publishers_.end(); it++) {
+        SrsRtcPublishStream *publisher = it->second;
+
+        if ((err = publisher->check_send_nacks()) != srs_success) {
+            srs_warn("ignore nack err %s", srs_error_desc(err).c_str());
+            srs_freep(err);
+        }
+    }
+
+    return err;
+}
+
 void SrsRtcConnection::simulate_nack_drop(int nn)
 {
     for (map<string, SrsRtcPublishStream *>::iterator it = publishers_.begin(); it != publishers_.end(); ++it) {
@@ -2663,7 +2700,7 @@ srs_error_t SrsRtcConnection::on_binding_request(SrsStunPacket *r, string &ice_p
 
     ++_srs_pps_sstuns->sugar_;
 
-    bool strict_check = _srs_config->get_rtc_stun_strict_check(req_->vhost_);
+    bool strict_check = config_->get_rtc_stun_strict_check(req_->vhost_);
     if (strict_check && r->get_ice_controlled()) {
         // @see: https://tools.ietf.org/html/draft-ietf-ice-rfc5245bis-00#section-6.1.3.1
         // TODO: Send 487 (Role Conflict) error response.
@@ -2778,8 +2815,8 @@ srs_error_t SrsRtcConnection::negotiate_publish_capability(SrsRtcUserConfig *ruc
     ISrsRequest *req = ruc->req_;
     const SrsSdp &remote_sdp = ruc->remote_sdp_;
 
-    bool nack_enabled = _srs_config->get_rtc_nack_enabled(req->vhost_);
-    bool twcc_enabled = _srs_config->get_rtc_twcc_enabled(req->vhost_);
+    bool nack_enabled = config_->get_rtc_nack_enabled(req->vhost_);
+    bool twcc_enabled = config_->get_rtc_twcc_enabled(req->vhost_);
     // TODO: FIME: Should check packetization-mode=1 also.
     bool has_42e01f = srs_sdp_has_h264_profile(remote_sdp, "42e01f");
 
@@ -3210,11 +3247,11 @@ srs_error_t SrsRtcConnection::negotiate_play_capability(SrsRtcUserConfig *ruc, s
     ISrsRequest *req = ruc->req_;
     const SrsSdp &remote_sdp = ruc->remote_sdp_;
 
-    bool nack_enabled = _srs_config->get_rtc_nack_enabled(req->vhost_);
-    bool twcc_enabled = _srs_config->get_rtc_twcc_enabled(req->vhost_);
+    bool nack_enabled = config_->get_rtc_nack_enabled(req->vhost_);
+    bool twcc_enabled = config_->get_rtc_twcc_enabled(req->vhost_);
 
     SrsSharedPtr<SrsRtcSource> source;
-    if ((err = _srs_rtc_sources->fetch_or_create(req, source)) != srs_success) {
+    if ((err = rtc_sources_->fetch_or_create(req, source)) != srs_success) {
         return srs_error_wrap(err, "fetch rtc source");
     }
 

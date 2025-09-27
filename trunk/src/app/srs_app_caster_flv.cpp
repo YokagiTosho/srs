@@ -155,6 +155,16 @@ void SrsAppCasterFlv::remove(ISrsResource *c)
     manager_->remove(c);
 }
 
+void SrsAppCasterFlv::subscribe(ISrsDisposingHandler *h)
+{
+    manager_->subscribe(h);
+}
+
+void SrsAppCasterFlv::unsubscribe(ISrsDisposingHandler *h)
+{
+    manager_->unsubscribe(h);
+}
+
 srs_error_t SrsAppCasterFlv::serve_http(ISrsHttpResponseWriter *w, ISrsHttpMessage *r)
 {
     SrsHttpMessage *msg = dynamic_cast<SrsHttpMessage *>(r);

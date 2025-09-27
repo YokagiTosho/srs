@@ -89,6 +89,8 @@ public:
     MockConnectionManager();
     virtual ~MockConnectionManager();
     virtual void remove(ISrsResource *c);
+    virtual void subscribe(ISrsDisposingHandler *h);
+    virtual void unsubscribe(ISrsDisposingHandler *h);
     virtual void dispose();
 };
 

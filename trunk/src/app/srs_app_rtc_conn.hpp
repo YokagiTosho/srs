@@ -355,6 +355,9 @@ private:
 class SrsRtcPublishTwccTimer : public ISrsFastTimerHandler
 {
 private:
+    ISrsCircuitBreaker *circuit_breaker_;
+
+private:
     ISrsRtcRtcpSender *sender_;
     srs_mutex_t lock_;
 
@@ -502,6 +505,17 @@ private:
     void update_send_report_time(uint32_t ssrc, const SrsNtp &ntp, uint32_t rtp_time);
 };
 
+// The handler for RTC connection nack timer.
+class ISrsRtcConnectionNackTimerHandler
+{
+public:
+    ISrsRtcConnectionNackTimerHandler();
+    virtual ~ISrsRtcConnectionNackTimerHandler();
+
+public:
+    virtual srs_error_t do_check_send_nacks() = 0;
+};
+
 // A fast timer for conntion, for NACK feedback.
 class SrsRtcConnectionNackTimer : public ISrsFastTimerHandler
 {
@@ -510,11 +524,11 @@ private:
     ISrsCircuitBreaker *circuit_breaker_;
 
 private:
-    SrsRtcConnection *p_;
+    ISrsRtcConnectionNackTimerHandler *handler_;
     srs_mutex_t lock_;
 
 public:
-    SrsRtcConnectionNackTimer(SrsRtcConnection *p);
+    SrsRtcConnectionNackTimer(ISrsRtcConnectionNackTimerHandler *handler);
     virtual ~SrsRtcConnectionNackTimer();
 
 public:
@@ -540,19 +554,22 @@ public:
 //
 // For performance, we use non-public from resource,
 // see https://stackoverflow.com/questions/3747066/c-cannot-convert-from-base-a-to-derived-type-b-via-virtual-base-a
-class SrsRtcConnection : public ISrsResource, public ISrsDisposingHandler, public ISrsExpire, public ISrsRtcPacketSender, public ISrsRtcPacketReceiver
+class SrsRtcConnection : public ISrsResource, public ISrsDisposingHandler, public ISrsExpire, public ISrsRtcPacketSender, public ISrsRtcPacketReceiver, public ISrsRtcConnectionNackTimerHandler
 {
     friend class SrsSecurityTransport;
 
 private:
-    friend class SrsRtcConnectionNackTimer;
+    ISrsCircuitBreaker *circuit_breaker_;
+    ISrsResourceManager *conn_manager_;
+    ISrsRtcSourceManager *rtc_sources_;
+    ISrsAppConfig *config_;
+
+private:
     SrsRtcConnectionNackTimer *timer_nack_;
+    ISrsExecRtcAsyncTask *exec_;
 
 public:
     bool disposing_;
-
-private:
-    ISrsExecRtcAsyncTask *exec_;
 
 private:
     iovec *cache_iov_;
@@ -604,7 +621,9 @@ private:
 
 public:
     SrsRtcConnection(ISrsExecRtcAsyncTask *exec, const SrsContextId &cid);
+    void assemble(); // Construct object, to avoid call function in constructor.
     virtual ~SrsRtcConnection();
+
     // interface ISrsDisposingHandler
 public:
     virtual void on_before_dispose(ISrsResource *c);
@@ -680,6 +699,10 @@ public:
     srs_error_t send_rtcp_rr(uint32_t ssrc, SrsRtpRingBuffer *rtp_queue, const uint64_t &last_send_systime, const SrsNtp &last_send_ntp);
     srs_error_t send_rtcp_xr_rrtr(uint32_t ssrc);
     srs_error_t send_rtcp_fb_pli(uint32_t ssrc, const SrsContextId &cid_of_subscriber);
+
+    // interface ISrsRtcConnectionNackTimerHandler
+public:
+    virtual srs_error_t do_check_send_nacks();
 
 public:
     // Simulate the NACK to drop nn packets.

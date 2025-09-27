@@ -71,6 +71,8 @@ public:
     // Interface ISrsResourceManager
 public:
     virtual void remove(ISrsResource *c);
+    virtual void subscribe(ISrsDisposingHandler *h);
+    virtual void unsubscribe(ISrsDisposingHandler *h);
     // Interface ISrsHttpHandler
 public:
     virtual srs_error_t serve_http(ISrsHttpResponseWriter *w, ISrsHttpMessage *r);

@@ -1354,6 +1354,14 @@ void MockConnectionManager::remove(ISrsResource * /*c*/)
 {
 }
 
+void MockConnectionManager::subscribe(ISrsDisposingHandler * /*h*/)
+{
+}
+
+void MockConnectionManager::unsubscribe(ISrsDisposingHandler * /*h*/)
+{
+}
+
 void MockConnectionManager::dispose()
 {
 }

@@ -87,6 +87,11 @@ public:
     // in the same coroutine or another coroutine. Some manager may support add c to a map, it
     // should always free it even if it's in the map.
     virtual void remove(ISrsResource *c) = 0;
+
+public:
+    // Subscribe the handler to be notified when before-dispose and disposing.
+    virtual void subscribe(ISrsDisposingHandler *h) = 0;
+    virtual void unsubscribe(ISrsDisposingHandler *h) = 0;
 };
 
 // The resource manager remove resource and delete it asynchronously.
