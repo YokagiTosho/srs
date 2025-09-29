@@ -448,7 +448,7 @@ fi
 # the real entry for all platform:
 cat << END >> ${SRS_MAKEFILE}
 
-default: server
+default: server api_server
 
 all: _default
 
@@ -532,6 +532,15 @@ server: _prepare_dir
 
 END
 
+# Generate Makefile entry for srs callback api server.
+cat << END >> ${SRS_MAKEFILE}
+api_server:
+	@echo "Build SRS callback API server"
+	@mkdir -p objs/research/api-server
+	go build -C research/api-server/ -o ../../objs/research/api-server/
+
+END
+
 # install entry
 cat << END >> ${SRS_MAKEFILE}
 uninstall:
@@ -548,6 +557,9 @@ install:
 	@cp -Rf research/players \$(__REAL_INSTALL)/objs/nginx/html/
 	@cp -Rf research/console \$(__REAL_INSTALL)/objs/nginx/html/
 	@cp -Rf 3rdparty/signaling/www/demos \$(__REAL_INSTALL)/objs/nginx/html/
+	@echo "Now copy http callback server"
+	@mkdir -p \$(__REAL_INSTALL)/objs/api-server
+	@cp -f objs/research/api-server/api-server \$(__REAL_INSTALL)/objs/api-server/
 	@echo "Now copy binary files"
 	@mkdir -p \$(__REAL_INSTALL)/objs
 	@cp -f objs/srs \$(__REAL_INSTALL)/objs
