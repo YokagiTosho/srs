@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -39,6 +39,47 @@ func SrsWriteDataResponse(w http.ResponseWriter, data interface{}) {
 	w.Write(j)
 }
 
+var publishKey string
+var playKey string
+
+func splitParams(params string) []string {
+	return strings.Split(params, "&")
+}
+
+func findSecret(params []string) (string, error) {
+	for _, param := range params {
+		r := strings.Split(param, "=")
+		key := r[0]
+		value := r[1]
+
+		if key == "secret" {
+			return value, nil
+		}
+	}
+
+	return "", fmt.Errorf("secret not present")
+}
+
+func authPeer(rowParams string, token string) error {
+	if rowParams[0] != '?' {
+		return fmt.Errorf("no params specified in URL")
+	}
+
+	// get all params from URL
+	params := splitParams(rowParams[1:])
+
+	secret, err := findSecret(params)
+	if err != nil {
+		return err
+	}
+
+	if secret != token {
+		return fmt.Errorf("not authorized")
+	}
+
+	return nil
+}
+
 var StaticDir string
 var sw *SnapshotWorker
 
@@ -59,6 +100,7 @@ func (v *SrsCommonRequest) String() string {
 handle the clients requests: connect/disconnect vhost/app.
 for SRS hook: on_connect/on_close
 on_connect:
+
 	when client connect to vhost/app, call the hook,
 	the request in the POST data string is a object encode by json:
 		  {
@@ -70,7 +112,9 @@ on_connect:
 			  "tcUrl": "rtmp://video.test.com/live?key=d2fa801d08e3f90ed1e1670e6e52651a",
 			  "pageUrl": "http://www.test.com/live.html"
 		  }
+
 on_close:
+
 	when client close/disconnect to vhost/app/stream, call the hook,
 	the request in the POST data string is a object encode by json:
 		  {
@@ -82,9 +126,11 @@ on_close:
 			  "send_bytes": 10240,
 			  "recv_bytes": 10240
 		  }
+
 if valid, the hook must return HTTP code 200(Stauts OK) and response
 an int value specifies the error code(0 corresponding to success):
-	  0
+
+	0
 */
 type SrsClientRequest struct {
 	SrsCommonRequest
@@ -118,32 +164,37 @@ func (v *SrsClientRequest) String() string {
 /*
 for SRS hook: on_publish/on_unpublish
 on_publish:
-   when client(encoder) publish to vhost/app/stream, call the hook,
-   the request in the POST data string is a object encode by json:
-		 {
-			 "action": "on_publish",
-			 "client_id": "9308h583",
-			 "ip": "192.168.1.10",
-			 "vhost": "video.test.com",
-			 "app": "live",
-			 "stream": "livestream",
-			 "param":"?token=xxx&salt=yyy"
-		 }
+
+	   when client(encoder) publish to vhost/app/stream, call the hook,
+	   the request in the POST data string is a object encode by json:
+			 {
+				 "action": "on_publish",
+				 "client_id": "9308h583",
+				 "ip": "192.168.1.10",
+				 "vhost": "video.test.com",
+				 "app": "live",
+				 "stream": "livestream",
+				 "param":"?token=xxx&salt=yyy"
+			 }
+
 on_unpublish:
-   when client(encoder) stop publish to vhost/app/stream, call the hook,
-   the request in the POST data string is a object encode by json:
-		 {
-			 "action": "on_unpublish",
-			 "client_id": "9308h583",
-			 "ip": "192.168.1.10",
-			 "vhost": "video.test.com",
-			 "app": "live",
-			 "stream": "livestream",
-			 "param":"?token=xxx&salt=yyy"
-		 }
+
+	   when client(encoder) stop publish to vhost/app/stream, call the hook,
+	   the request in the POST data string is a object encode by json:
+			 {
+				 "action": "on_unpublish",
+				 "client_id": "9308h583",
+				 "ip": "192.168.1.10",
+				 "vhost": "video.test.com",
+				 "app": "live",
+				 "stream": "livestream",
+				 "param":"?token=xxx&salt=yyy"
+			 }
+
 if valid, the hook must return HTTP code 200(Stauts OK) and response
 an int value specifies the error code(0 corresponding to success):
-	 0
+
+	0
 */
 type SrsStreamRequest struct {
 	SrsCommonRequest
@@ -386,9 +437,9 @@ func (v *SnapshotJob) Abort() {
 }
 
 /*
-./objs/ffmpeg/bin/ffmpeg -i rtmp://127.0.0.1/live/livestream \
-    -vf fps=1 -vcodec png -f image2 -an -vframes 5 \
-    -y static-dir/live/livestream-%03d.png
+	./objs/ffmpeg/bin/ffmpeg -i rtmp://127.0.0.1/live/livestream \
+	    -vf fps=1 -vcodec png -f image2 -an -vframes 5 \
+	    -y static-dir/live/livestream-%03d.png
 */
 func (v *SnapshotJob) do(ffmpegPath, inputUrl string) (err error) {
 	outputPicDir := path.Join(StaticDir, v.App)
@@ -534,6 +585,18 @@ func (v *SrsForwardRequest) IsOnForward() bool {
 }
 
 func main() {
+	// get environment variables for private keys
+	publishKey = os.Getenv("PUBLISH_KEY")
+	if publishKey == "" {
+		log.Fatalf("PUBLISH_KEY is not set")
+	}
+	log.Println("PUBLISH_KEY is set:", publishKey)
+	// if playKey is not set, then stream will be played without authentication
+	playKey = os.Getenv("PLAY_KEY")
+	if playKey != "" {
+		log.Println("PLAY_KEY is set:", playKey)
+	}
+
 	srsBin := os.Args[0]
 	if strings.HasPrefix(srsBin, "/var") {
 		srsBin = "go run ."
@@ -614,7 +677,7 @@ func main() {
 		}
 
 		if err := func() error {
-			body, err := ioutil.ReadAll(r.Body)
+			body, err := io.ReadAll(io.Reader(r.Body))
 			if err != nil {
 				return fmt.Errorf("read request body, err %v", err)
 			}
@@ -645,7 +708,7 @@ func main() {
 		}
 
 		if err := func() error {
-			body, err := ioutil.ReadAll(r.Body)
+			body, err := io.ReadAll(io.Reader(r.Body))
 			if err != nil {
 				return fmt.Errorf("read request body, err %v", err)
 			}
@@ -659,6 +722,13 @@ func main() {
 
 			if !msg.IsOnPublish() && !msg.IsOnUnPublish() {
 				return fmt.Errorf("invalid message %v", msg.String())
+			}
+
+			if msg.IsOnPublish() {
+				err := authPeer(msg.Param, publishKey)
+				if err != nil {
+					return err
+				}
 			}
 
 			SrsWriteDataResponse(w, &SrsCommonResponse{Code: 0})
@@ -676,7 +746,7 @@ func main() {
 		}
 
 		if err := func() error {
-			body, err := ioutil.ReadAll(r.Body)
+			body, err := io.ReadAll(io.Reader(r.Body))
 			if err != nil {
 				return fmt.Errorf("read request body, err %v", err)
 			}
@@ -690,6 +760,17 @@ func main() {
 
 			if !msg.IsOnPlay() && !msg.IsOnStop() {
 				return fmt.Errorf("invalid message %v", msg.String())
+			}
+
+			if msg.IsOnPlay() {
+				// if playKey was set, then match against it
+				// otherwise just ignore
+				if playKey != "" {
+					err := authPeer(msg.Param, playKey)
+					if err != nil {
+						return err
+					}
+				}
 			}
 
 			SrsWriteDataResponse(w, &SrsCommonResponse{Code: 0})
@@ -707,7 +788,7 @@ func main() {
 		}
 
 		if err := func() error {
-			body, err := ioutil.ReadAll(r.Body)
+			body, err := io.ReadAll(io.Reader(r.Body))
 			if err != nil {
 				return fmt.Errorf("read request body, err %v", err)
 			}
@@ -738,7 +819,7 @@ func main() {
 		}
 
 		if err := func() error {
-			body, err := ioutil.ReadAll(r.Body)
+			body, err := io.ReadAll(io.Reader(r.Body))
 			if err != nil {
 				return fmt.Errorf("read request body, err %v", err)
 			}
@@ -773,7 +854,7 @@ func main() {
 		}
 
 		if err := func() error {
-			body, err := ioutil.ReadAll(r.Body)
+			body, err := io.ReadAll(io.Reader(r.Body))
 			if err != nil {
 				return fmt.Errorf("read request body, err %v", err)
 			}
@@ -808,7 +889,7 @@ func main() {
 		}
 
 		if err := func() error {
-			body, err := ioutil.ReadAll(r.Body)
+			body, err := io.ReadAll(io.Reader(r.Body))
 			if err != nil {
 				return fmt.Errorf("read request body, err %v", err)
 			}
