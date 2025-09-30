@@ -725,6 +725,11 @@ func main() {
 			}
 
 			if msg.IsOnPublish() {
+				// for publishing param must be specified
+				if len(msg.Param) == 0 {
+					return fmt.Errorf("no param is specified")
+				}
+
 				err := authPeer(msg.Param, publishKey)
 				if err != nil {
 					return err
@@ -766,6 +771,10 @@ func main() {
 				// if playKey was set, then match against it
 				// otherwise just ignore
 				if playKey != "" {
+					if len(msg.Param) == 0 {
+						return fmt.Errorf("private key was specified for playing, but param is not set")
+					}
+
 					err := authPeer(msg.Param, playKey)
 					if err != nil {
 						return err
