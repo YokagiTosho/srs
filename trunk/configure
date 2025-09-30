@@ -448,7 +448,7 @@ fi
 # the real entry for all platform:
 cat << END >> ${SRS_MAKEFILE}
 
-default: server api_server
+default: server rtmp_auth_callback
 
 all: _default
 
@@ -534,10 +534,10 @@ END
 
 # Generate Makefile entry for srs callback api server.
 cat << END >> ${SRS_MAKEFILE}
-api_server:
-	@echo "Build SRS callback API server"
-	@mkdir -p objs/research/api-server
-	(cd research/api-server/ && go build -o ../../objs/research/api-server/)
+rtmp_auth_callback:
+	@echo "Build SRS RTMP callback API server"
+	@mkdir -p objs/research/rtmp-auth-callback
+	(cd research/rtmp-auth-callback/ && go build -o ../../objs/research/rtmp-auth-callback/)
 
 END
 
