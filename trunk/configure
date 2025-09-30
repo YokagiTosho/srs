@@ -537,7 +537,7 @@ cat << END >> ${SRS_MAKEFILE}
 api_server:
 	@echo "Build SRS callback API server"
 	@mkdir -p objs/research/api-server
-	go build -C research/api-server/ -o ../../objs/research/api-server/
+	(cd research/api-server/ && go build -o ../../objs/research/api-server/)
 
 END
 
